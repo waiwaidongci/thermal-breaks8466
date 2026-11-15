@@ -1,4 +1,9 @@
 -- ORM metadata creates these tables at startup. Initial audit reference, not a migration runner.
--- thermal_batches(name UNIQUE), temperature_points(batch_id, sequence UNIQUE, recorded_at UNIQUE)
+-- thermal_batches(name UNIQUE, status DEFAULT 'published', source_upload_id -> csv_uploads.id)
+-- temperature_points(batch_id, sequence UNIQUE, recorded_at UNIQUE)
+-- csv_uploads(name UNIQUE): CSV 断点续传会话，status = open | quarantined | published
+--   parser_state/validate_state 为 JSON 持久化的流式解析与跨块校验状态（体积只与当前半条记录有关）
+-- csv_upload_chunks(upload_id, index UNIQUE, start_byte, end_byte, sha256, payload BYTEA)
+-- csv_staged_points(upload_id, sequence UNIQUE)：发布前暂存点，发布后单事务原子搬入 temperature_points
 -- segmentation_runs(config JSON, result JSON), segments(run_id, position UNIQUE), inspection_notes(segment_snapshot JSON)
 -- users(email UNIQUE), audit_logs. See src/models for full columns and FK definitions.

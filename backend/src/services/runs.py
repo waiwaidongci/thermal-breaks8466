@@ -1,12 +1,14 @@
 from sqlalchemy import select
 from fastapi import HTTPException
-from src.models import SegmentationRun
+from src.models import SegmentationRun,ThermalBatch
 from src.utils.serialize import row
 from .batches import batch_data
 from .validation import validate_config
 from .audit import record
 
 def create_run(db,data,actor):
+ batch=db.get(ThermalBatch,data.batch_id)
+ if not batch or batch.status!='published':raise HTTPException(404,'已发布批次不存在')
  _,points=batch_data(db,data.batch_id);config=data.model_dump(exclude={'batch_id','name'})
  try:validate_config(config,len(points))
  except ValueError as e:raise HTTPException(422,str(e))

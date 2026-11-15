@@ -1,6 +1,11 @@
 export type User={id:number;email:string;name:string;role:string};
-export type Batch={id:number;name:string;filename:string;description:string};
+export type Batch={id:number;name:string;filename:string;description:string;status?:string;source_upload_id?:number|null};
 export type Point={id:number;batch_id:number;sequence:number;recorded_at:string;temperature:number};
+export type UploadSummary={id:number;name:string;filename:string;description:string;size:number;sha256:string;
+ chunk_size:number;total_chunks:number;status:'open'|'quarantined'|'published';received_chunks:number;
+ received_bytes:number;next_expected_chunk:number;staged_points:number;quarantine_reason:string;
+ quarantined_at:string|null;batch_id:number|null;created_by:string;created_at:string;updated_at:string;
+ published_at:string|null;missing_chunks:number[];missing_count:number;percent:number};
 export type Segment={id?:number;run_id?:number;position:number;start:number;end:number;mean:number;rss:number};
 export type Run={id:number;batch_id:number;name:string;status:string;config:any;result:any;error?:string;created_at:string};
 export type Note={id:number;run_id:number;name:string;segment_ids:number[];segment_snapshot:Segment[];interpretation:string;next_step:string;status:string;review_note:string;created_by:string};

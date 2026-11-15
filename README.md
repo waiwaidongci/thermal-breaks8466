@@ -32,7 +32,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 1. 09:00，分析员陈禾打开“热程首页”，先读离线模型的解释边界。
 2. 到“温度底稿”选择 `YG-2411-A 阶跃焙程`，核对 `yg-thermal-1-202611.csv`。每 30 秒一点；A 批原记录从 2026-11-10 09:00:00 UTC 开始，页面按浏览器时区显示。
-3. 核对温度、连续序号和带时区时间。页面允许导入带 points 数组的 JSON，也可修订单点；已有运行仍保留当时序列。
+3. 核对温度、连续序号和带时区时间。页面允许导入带 points 数组的 JSON（每批 ≤600 点），也可修订单点；已有运行仍保留当时序列。大文件走“CSV 断点续传”：分块并发上传，断网或重启后按服务端缺失块续传，结束声明（点数 + 整文件 SHA-256）与连续序号、时间、温度全部核对通过后，批次才原子进入底稿。
 4. 在“分段配置”预先设 min_size=12、max_segments=8、当前罚项 β=80，路径 `[0,20,80,320,1280]`，建立研究。
 5. 真实队列执行精确 DP。结果显示段区间 1–90、91–200、201–300；断点 90 表示第 90 个点仍在左段，第 91 点开始右段。
 6. 展开各预设罚项的段数、断点和目标，并对照相邻段均值差。路径反映参数选择敏感性，不能当断点置信区间。
@@ -54,6 +54,16 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 输入每批1–600点，序号从1连续唯一，带时区时间按序号严格递增，温度有限且绝对值≤1e12；重复时间、跳号、倒序、无时区、非有限值、负罚项、重复单一罚项路径和非法参数均拒绝。worker 独立重验，历史坏任务会落 failed，不生成伪分段。指纹包含批次元数据、按序号排序的全部点字段、配置和算法版本，对行序稳定、字段修改敏感。
 
+## CSV 大文件断点续传
+
+JSON 粘贴通道只适合 ≤600 点的小批；逗号分隔文件走独立的续传通道，单文件上限 200MiB、最多 100000 点、20000 块。
+
+- **字节级流式解析（RFC 4180）**：解析器每次只吃一个分块，引号字段可含换行、逗号与转义引号，CRLF/LF/CR 都支持，自动跳过唯一 UTF-8 BOM 与单行三列表头。解析状态（模式、当前半条记录、未拼完的 UTF-8 字节）是 JSON 原生类型，随分块落库；在半个字符、半个引号字段或半条记录处中断，重启后用同样字节序列即可继续。暂存额外内存只与当前半条记录有关（单记录 65536 字符上限），不随文件总大小增长。
+- **分块交错与断点续传**：客户端按固定 `chunk_size` 切分并并发上传，分块可乱序到达；服务端只按字节顺序消费连续前缀，未到前缀的块先落库不解析。进度以服务端缺失块集合为准，前端另在 localStorage 记录未完成任务，换标签页或重启都能续。
+- **并发重传与冲突**：同段重传字节一致则幂等、不重复计入；同段字节不一致或字节范围与已存块重叠，保留原进度并把整个上传置为 `quarantined`，返回 409 冲突。应用级会话锁与 PostgreSQL `SELECT … FOR UPDATE` 行锁双重串行化临界区。
+- **结束声明与原子发布**：`finish` 提交点数与整文件 SHA-256。服务端流式重算摘要、核对连续字节范围、解析收尾（暴露未闭合引号/坏 UTF-8）、连续序号、带时区严格递增时间与有限温度，全部通过后在**单事务**内创建 `published` 批次并搬运全部温度点；任一项失败则回滚并隔离，不产生半成品底稿。结束与发布路径用 `yield_per` 游标分批，不一次性载入全文件。
+- **隔离与读取面**：损坏批次停留 `quarantined`，页面展示隔离原因且不阻塞其他批次；只有 `published` 批次出现在 `/batches`、`/points` 和分段运行创建路径，研究端永远读不到未发布或已隔离数据。分块、暂存点、解析状态与 `upload.created/quarantined/published` 审计记录在发布后保留备查。
+
 独立同方差的片段误差是工作近似。平滑漂移也可能切成阶跃；β 路径不是置信区间，分段不是在线警报，均值差不是因果归因。观察过程、测量误差和现场条件必须另行核对。
 
 ## 工程结构与开发
@@ -63,11 +73,13 @@ docker compose exec -T backend python -m scripts.seed_demo
 |前端|React18 / TypeScript / Vite6.4.6，SVG按真实序列画图，Work Sans+Noto Serif SC|
 |后端|Python3.11 / FastAPI / SQLAlchemy，JWT三角色、审计、错误边界|
 |计算|NumPy longdouble，精确DP和单frontier罚项路径，Celery5.4/Kombu5.4.2|
-|存储|PostgreSQL16 / Redis7，五实体、User和AuditLog|
+|存储|PostgreSQL16 / Redis7，业务五实体 + User/AuditLog，CSV 续传三表（CsvUpload/CsvUploadChunk/CsvStagedPoint）|
 
 75 个有职责的 Python/TS/TSX/CSS 文件，不含空包、依赖或构建产物。五个业务实体为 ThermalBatch → TemperaturePoint → SegmentationRun → Segment → InspectionNote，贯穿 ORM、schema、服务、路由、前端API/store和六个业务页面。后端 `src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`；前端 `src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`。
 
-共享枚举 Role、RunStatus、NoteStatus 位于后端 `src/constants/enums.py` 与前端 `src/constants/enums.ts`。RequestID/Error 两个中间件负责追踪与统一错误；ThermalChart、RunSummary、RunTable 在多页复用，另有 PenaltyPath、SegmentTable 和 common 组件。useAsync/useHash 与 format 工具处理交互和格式。说明冻结 segment_snapshot，底稿修订不能改写已批准导出。
+共享枚举 Role、RunStatus、NoteStatus 位于后端 `src/constants/enums.py` 与前端 `src/constants/enums.ts`（前端另含 UploadStatus）。RequestID/Error 两个中间件负责追踪与统一错误；ThermalChart、RunSummary、RunTable 在多页复用，另有 PenaltyPath、SegmentTable、UploadPanel 和 common 组件。useAsync/useHash/useResumableUpload 与 format 工具处理交互和格式。说明冻结 segment_snapshot，底稿修订不能改写已批准导出。
+
+后端测试在 `backend/tests/`（pytest + FastAPI TestClient + SQLite 内存文件库，无需 Postgres/Redis）：覆盖流式解析器的任意字节切分与状态 JSON 往返、半字符/半记录恢复、分块幂等与并发重传、重叠字节冲突隔离、损坏批次隔离不阻塞他人、结束声明/摘要核对、原子发布与研究读取面过滤、暂存内存有界等 20 项。
 
 本地前端开发 `cd frontend && npm ci && npm run dev`；`npm run build` 执行 tsc 和 Vite。后端安装 requirements.txt，设置 DATABASE_URL/REDIS_URL/JWT_SECRET 后运行 uvicorn；数据库须先就绪。迁移目录提供初始表结构说明，当前使用 ORM metadata 创建表，没有生产版本迁移链。许可证见 LICENSE（MIT）。
 

@@ -9,10 +9,15 @@ from src.services.batches import create_batch,edit_point
 from src.utils.serialize import row
 router=APIRouter()
 @router.get('/batches')
-def batches(db:Session=Depends(get_db),user=Depends(current_user)):return [row(x) for x in db.scalars(select(ThermalBatch).order_by(ThermalBatch.id))]
+def batches(db:Session=Depends(get_db),user=Depends(current_user)):
+ return [row(x) for x in db.scalars(
+  select(ThermalBatch).where(ThermalBatch.status=='published').order_by(ThermalBatch.id))]
 @router.post('/batches')
 def create(data:BatchInput,db:Session=Depends(get_db),user=Depends(writers)):return create_batch(db,data,user.email)
 @router.get('/points')
-def points(db:Session=Depends(get_db),user=Depends(current_user)):return [row(x) for x in db.scalars(select(TemperaturePoint).order_by(TemperaturePoint.batch_id,TemperaturePoint.sequence))]
+def points(db:Session=Depends(get_db),user=Depends(current_user)):
+ return [row(x) for x in db.scalars(select(TemperaturePoint).join(
+  ThermalBatch,ThermalBatch.id==TemperaturePoint.batch_id).where(
+  ThermalBatch.status=='published').order_by(TemperaturePoint.batch_id,TemperaturePoint.sequence))]
 @router.patch('/points/{id}')
 def patch(id:int,data:PointPatch,db:Session=Depends(get_db),user=Depends(writers)):return edit_point(db,id,data,user.email)
